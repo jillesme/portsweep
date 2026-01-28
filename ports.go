@@ -6,13 +6,21 @@ import (
 	"strings"
 )
 
-// Process represents a process listening on a port
+// Process represents a process listening on one or more ports
 type Process struct {
 	PID     int
-	Port    int
+	Ports   []int
 	Name    string
 	User    string
 	Command string
+}
+
+// LowestPort returns the lowest port number for this process
+func (p Process) LowestPort() int {
+	if len(p.Ports) == 0 {
+		return 0
+	}
+	return p.Ports[0] // Ports are kept sorted, so first is lowest
 }
 
 // GetListeningPorts returns all processes listening on TCP ports
@@ -35,11 +43,11 @@ func GetListeningPorts() ([]Process, error) {
 	return parseLsofOutput(string(output))
 }
 
-// parseLsofOutput parses the lsof output into Process structs
+// parseLsofOutput parses the lsof output into Process structs, grouping ports by PID
 func parseLsofOutput(output string) ([]Process, error) {
 	lines := strings.Split(output, "\n")
-	processes := make([]Process, 0)
-	seen := make(map[int]bool) // Track PIDs we've already added
+	processMap := make(map[int]*Process) // PID -> Process
+	seenPorts := make(map[int]bool)      // Track ports we've already added (for dedup across interfaces)
 
 	for i, line := range lines {
 		// Skip header line
@@ -71,31 +79,54 @@ func parseLsofOutput(output string) ([]Process, error) {
 			continue
 		}
 
-		// Skip if we've already seen this PID (lsof can show multiple entries per process)
-		if seen[pid] {
-			continue
-		}
-
 		// Parse port from name field (e.g., "*:3000" or "127.0.0.1:8080")
 		port := parsePort(nameField)
 		if port == 0 {
 			continue
 		}
 
-		// Get full command line
-		command := getFullCommand(pid)
+		// Skip if we've already seen this port (can have multiple entries for same port on different interfaces)
+		if seenPorts[port] {
+			continue
+		}
+		seenPorts[port] = true
 
-		processes = append(processes, Process{
-			PID:     pid,
-			Port:    port,
-			Name:    name,
-			User:    user,
-			Command: command,
-		})
-		seen[pid] = true
+		// Add to existing process or create new one
+		if proc, exists := processMap[pid]; exists {
+			proc.Ports = append(proc.Ports, port)
+		} else {
+			// Get full command line (only once per PID)
+			command := getFullCommand(pid)
+			processMap[pid] = &Process{
+				PID:     pid,
+				Ports:   []int{port},
+				Name:    name,
+				User:    user,
+				Command: command,
+			}
+		}
+	}
+
+	// Convert map to slice and sort ports within each process
+	processes := make([]Process, 0, len(processMap))
+	for _, proc := range processMap {
+		// Sort ports ascending
+		sortInts(proc.Ports)
+		processes = append(processes, *proc)
 	}
 
 	return processes, nil
+}
+
+// sortInts sorts a slice of ints in ascending order
+func sortInts(nums []int) {
+	for i := 0; i < len(nums)-1; i++ {
+		for j := i + 1; j < len(nums); j++ {
+			if nums[j] < nums[i] {
+				nums[i], nums[j] = nums[j], nums[i]
+			}
+		}
+	}
 }
 
 // parsePort extracts the port number from a lsof NAME field

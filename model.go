@@ -34,7 +34,7 @@ var (
 	portStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#7DCFFF")).
-			Width(7)
+			Width(18)
 
 	pidStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#9ECE6A")).
@@ -224,7 +224,15 @@ func (m Model) filteredProcesses() []Process {
 
 	filtered := make([]Process, 0)
 	for _, p := range m.processes {
-		if p.Port >= 1024 {
+		// Include if ANY port is >= 1024 (inclusive filtering)
+		hasUserPort := false
+		for _, port := range p.Ports {
+			if port >= 1024 {
+				hasUserPort = true
+				break
+			}
+		}
+		if hasUserPort {
 			filtered = append(filtered, p)
 		}
 	}
@@ -268,7 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Start batch kill
 					m.killIndex = 0
 					p := m.toKill[0]
-					return m, m.killProcess(p.PID, p.Port, len(m.toKill)-1)
+					return m, m.killProcess(p.PID, p.LowestPort(), len(m.toKill)-1)
 				}
 				return m, nil
 			case key.Matches(msg, keys.Cancel):
@@ -302,10 +310,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(filtered) > 0 && m.cursor < len(filtered) {
 				p := filtered[m.cursor]
 				m.selected[p.PID] = !m.selected[p.PID]
-				// Move cursor down after selecting
-				if m.cursor < len(filtered)-1 {
-					m.cursor++
-				}
 			}
 
 		case key.Matches(msg, keys.SelectAll):
@@ -372,9 +376,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshMsg:
 		m.processes = []Process(msg)
-		// Sort by port number
+		// Sort by lowest port number
 		sort.Slice(m.processes, func(i, j int) bool {
-			return m.processes[i].Port < m.processes[j].Port
+			return m.processes[i].LowestPort() < m.processes[j].LowestPort()
 		})
 		// Clean up selected map - remove PIDs that no longer exist
 		existingPIDs := make(map[int]bool)
@@ -403,7 +407,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Check if more to kill
 		if m.killIndex < len(m.toKill) {
 			p := m.toKill[m.killIndex]
-			return m, m.killProcess(p.PID, p.Port, len(m.toKill)-m.killIndex-1)
+			return m, m.killProcess(p.PID, p.LowestPort(), len(m.toKill)-m.killIndex-1)
 		}
 
 		// All done
@@ -444,7 +448,7 @@ func (m Model) View() string {
 	s += titleStyle.Render(title) + "\n"
 
 	// Header
-	header := fmt.Sprintf("    %-7s %-8s %-15s %-12s %s",
+	header := fmt.Sprintf("    %-18s %-8s %-15s %-12s %s",
 		"PORT", "PID", "PROCESS", "USER", "COMMAND")
 	s += headerStyle.Render(header) + "\n"
 
@@ -473,7 +477,7 @@ func (m Model) View() string {
 
 			line := fmt.Sprintf("%s %s %s %s %s %s",
 				checkbox,
-				portStyle.Render(fmt.Sprintf("%-7d", p.Port)),
+				portStyle.Render(fmt.Sprintf("%-18s", formatPorts(p.Ports, 18))),
 				pidStyle.Render(fmt.Sprintf("%-8d", p.PID)),
 				nameStyle.Render(truncate(p.Name, 15)),
 				userStyle.Render(truncate(p.User, 12)),
@@ -510,7 +514,12 @@ func (m Model) View() string {
 	if m.confirming {
 		if len(m.toKill) == 1 {
 			p := m.toKill[0]
-			s += confirmStyle.Render(fmt.Sprintf("\nKill process %d on port %d? (y/n)", p.PID, p.Port))
+			portsStr := formatPorts(p.Ports, 40)
+			if len(p.Ports) == 1 {
+				s += confirmStyle.Render(fmt.Sprintf("\nKill process %d on port %s? (y/n)", p.PID, portsStr))
+			} else {
+				s += confirmStyle.Render(fmt.Sprintf("\nKill process %d on ports %s? (y/n)", p.PID, portsStr))
+			}
 		} else {
 			s += confirmStyle.Render(fmt.Sprintf("\nKill %d selected processes? (y/n)", len(m.toKill)))
 		}
@@ -534,6 +543,45 @@ func truncate(s string, maxLen int) string {
 		return fmt.Sprintf("%-*s", maxLen, s)
 	}
 	return s[:maxLen-1] + "…"
+}
+
+// formatPorts formats a list of ports for display with truncation
+// maxWidth is the maximum character width for the output
+func formatPorts(ports []int, maxWidth int) string {
+	if len(ports) == 0 {
+		return ""
+	}
+
+	// Start with the first port
+	result := fmt.Sprintf("%d", ports[0])
+
+	// Try to add more ports
+	portsShown := 1
+	for i := 1; i < len(ports); i++ {
+		next := fmt.Sprintf(", %d", ports[i])
+		remaining := len(ports) - i - 1
+
+		// Calculate space needed for "+N" suffix if we stop here
+		suffixLen := 0
+		if remaining > 0 {
+			suffixLen = len(fmt.Sprintf(" +%d", remaining+1))
+		}
+
+		// Check if adding this port would exceed max width
+		if len(result)+len(next)+suffixLen > maxWidth {
+			// Can't fit more, add suffix for remaining
+			remainingCount := len(ports) - portsShown
+			if remainingCount > 0 {
+				result += fmt.Sprintf(" +%d", remainingCount)
+			}
+			break
+		}
+
+		result += next
+		portsShown++
+	}
+
+	return result
 }
 
 func max(a, b int) int {

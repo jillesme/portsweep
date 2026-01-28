@@ -11,7 +11,9 @@ import (
 var version = "dev"
 
 func main() {
-	// Handle --version / -v flag
+	var initialFilter string
+
+	// Handle flags and arguments
 	if len(os.Args) > 1 {
 		arg := os.Args[1]
 		if arg == "-v" || arg == "--version" || arg == "version" {
@@ -22,9 +24,11 @@ func main() {
 			printHelp()
 			return
 		}
+		// Treat as filter argument (port number or process name)
+		initialFilter = arg
 	}
 
-	p := tea.NewProgram(NewModel(), tea.WithAltScreen())
+	p := tea.NewProgram(NewModel(initialFilter), tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error running portsweep: %v\n", err)
@@ -37,6 +41,12 @@ func printHelp() {
 
 Usage:
   portsweep [flags]
+  portsweep <port>      Kill process on specific port (e.g., portsweep 3000)
+  portsweep <name>      Kill processes matching name (e.g., portsweep node)
+
+Arguments:
+  <port>        Port number to match (exact match)
+  <name>        Process name or command to match (case-insensitive)
 
 Flags:
   -h, --help      Show this help message
@@ -50,5 +60,6 @@ Keybindings:
   enter/d      Kill selected process(es)
   r            Refresh
   s            Toggle system ports (<1024)
+  /            Search/filter processes
   q            Quit`)
 }

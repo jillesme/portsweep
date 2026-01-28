@@ -481,12 +481,7 @@ func (m Model) View() string {
 			)
 
 			if i == m.cursor {
-				// For selected row, we need to handle styling differently
-				if m.selected[p.PID] {
-					s += selectedStyle.Render(line) + "\n"
-				} else {
-					s += selectedStyle.Render(line) + "\n"
-				}
+				s += selectedStyle.Render(line) + "\n"
 			} else {
 				if m.selected[p.PID] {
 					s += checkedStyle.Render(line) + "\n"

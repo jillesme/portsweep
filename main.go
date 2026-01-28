@@ -45,7 +45,7 @@ Flags:
 Keybindings:
   ↑/k          Move up
   ↓/j          Move down
-  space        Select/deselect process
+  space/tab    Select/deselect process
   a            Select all
   enter/d      Kill selected process(es)
   r            Refresh

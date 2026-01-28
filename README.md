@@ -2,7 +2,7 @@
 
 A terminal UI for managing processes listening on ports. Quickly see what's running, select processes, and kill them with a single keystroke.
 
-![portsweep screenshot](screenshot.png)
+![portsweep demo](demo.gif)
 
 ## Features
 

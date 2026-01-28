@@ -1,6 +1,7 @@
 # Binaries
 portsweep
 portsweep-*
+dist/
 
 # Go
 *.exe

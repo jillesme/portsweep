@@ -9,159 +9,34 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
-// Styles
-var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FF6B6B")).
-			MarginBottom(1)
+// Configuration constants
+const (
+	// RefreshInterval is how often the process list auto-refreshes
+	RefreshInterval = 2 * time.Second
 
-	selectedStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#1a1a1a")).
-			Background(lipgloss.Color("#7DCFFF"))
+	// StatusDisplayDuration is how long status messages are shown
+	StatusDisplayDuration = 3 * time.Second
 
-	normalStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#c0c0c0"))
+	// SystemPortThreshold is the boundary between system and user ports
+	SystemPortThreshold = 1024
 
-	checkedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FF6B6B"))
+	// DefaultCommandWidth is the minimum width for the command column
+	DefaultCommandWidth = 50
 
-	checkboxChecked   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Render("[x]")
-	checkboxUnchecked = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Render("[ ]")
+	// MinTerminalWidth is the threshold for adjusting command width
+	MinTerminalWidth = 60
 
-	portStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#7DCFFF")).
-			Width(18)
+	// ColumnWidthOffset accounts for other columns when calculating command width
+	ColumnWidthOffset = 55
 
-	pidStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#9ECE6A")).
-			Width(8)
+	// MinFullCommandWidth is the minimum width for the full command detail line
+	MinFullCommandWidth = 20
 
-	nameStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#BB9AF7")).
-			Width(15)
-
-	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#E0AF68")).
-			Width(12)
-
-	commandStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#737373"))
-
-	cmdDetailStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#565656")).
-			Italic(true)
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#626262")).
-			MarginTop(1)
-
-	confirmStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FF6B6B")).
-			MarginTop(1)
-
-	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#9ECE6A")).
-			MarginTop(1)
-
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#626262")).
-			MarginBottom(0)
-
-	emptyStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#626262")).
-			Italic(true).
-			MarginTop(2)
-
-	selectedCountStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#FF6B6B"))
-
-	searchStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7DCFFF"))
-
-	searchFilterStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#9ECE6A"))
+	// DefaultFullCommandWidth is used when terminal width is unknown
+	DefaultFullCommandWidth = 80
 )
-
-// Key bindings
-type keyMap struct {
-	Up        key.Binding
-	Down      key.Binding
-	Kill      key.Binding
-	Refresh   key.Binding
-	Toggle    key.Binding
-	Quit      key.Binding
-	Confirm   key.Binding
-	Cancel    key.Binding
-	Select    key.Binding
-	SelectAll key.Binding
-	Search    key.Binding
-}
-
-var keys = keyMap{
-	Up: key.NewBinding(
-		key.WithKeys("up", "k"),
-		key.WithHelp("↑/k", "up"),
-	),
-	Down: key.NewBinding(
-		key.WithKeys("down", "j"),
-		key.WithHelp("↓/j", "down"),
-	),
-	Kill: key.NewBinding(
-		key.WithKeys("enter", "d"),
-		key.WithHelp("enter/d", "kill"),
-	),
-	Refresh: key.NewBinding(
-		key.WithKeys("r"),
-		key.WithHelp("r", "refresh"),
-	),
-	Toggle: key.NewBinding(
-		key.WithKeys("s"),
-		key.WithHelp("s", "toggle system ports"),
-	),
-	Quit: key.NewBinding(
-		key.WithKeys("q", "ctrl+c"),
-		key.WithHelp("q", "quit"),
-	),
-	Confirm: key.NewBinding(
-		key.WithKeys("y"),
-		key.WithHelp("y", "confirm"),
-	),
-	Cancel: key.NewBinding(
-		key.WithKeys("n", "esc"),
-		key.WithHelp("n/esc", "cancel"),
-	),
-	Select: key.NewBinding(
-		key.WithKeys(" ", "tab"),
-		key.WithHelp("space/tab", "select"),
-	),
-	SelectAll: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "select all"),
-	),
-	Search: key.NewBinding(
-		key.WithKeys("/"),
-		key.WithHelp("/", "search"),
-	),
-}
-
-// Messages
-type tickMsg time.Time
-type refreshMsg []Process
-type killResultMsg struct {
-	success   bool
-	pid       int
-	port      int
-	remaining int // how many left to kill
-}
 
 // Model represents the TUI state
 type Model struct {
@@ -180,6 +55,7 @@ type Model struct {
 	filterApplied   bool   // whether we've applied the initial filter
 	searching       bool   // whether in search mode
 	searchQuery     string // current search query
+	lastError       error  // last error from port scanning
 }
 
 // NewModel creates a new Model with optional initial filter
@@ -204,9 +80,9 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-// tickCmd returns a command that sends a tick every 2 seconds
+// tickCmd returns a command that sends a tick at the refresh interval
 func (m Model) tickCmd() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(RefreshInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -215,10 +91,7 @@ func (m Model) tickCmd() tea.Cmd {
 func (m Model) refreshPorts() tea.Cmd {
 	return func() tea.Msg {
 		processes, err := GetListeningPorts()
-		if err != nil {
-			return refreshMsg{}
-		}
-		return refreshMsg(processes)
+		return refreshMsg{processes: processes, err: err}
 	}
 }
 
@@ -244,7 +117,7 @@ func (m Model) filteredProcesses() []Process {
 		if !m.showSystemPorts {
 			hasUserPort := false
 			for _, port := range p.Ports {
-				if port >= 1024 {
+				if port >= SystemPortThreshold {
 					hasUserPort = true
 					break
 				}
@@ -258,6 +131,7 @@ func (m Model) filteredProcesses() []Process {
 		if m.searchQuery != "" {
 			query := strings.ToLower(m.searchQuery)
 			matchesName := strings.Contains(strings.ToLower(p.Name), query)
+			matchesCommand := strings.Contains(strings.ToLower(p.Command), query)
 			matchesPort := false
 			for _, port := range p.Ports {
 				if strings.Contains(strconv.Itoa(port), m.searchQuery) {
@@ -265,7 +139,7 @@ func (m Model) filteredProcesses() []Process {
 					break
 				}
 			}
-			if !matchesName && !matchesPort {
+			if !matchesName && !matchesCommand && !matchesPort {
 				continue
 			}
 		}
@@ -474,7 +348,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.showSystemPorts {
 				m.statusMessage = "Showing all ports"
 			} else {
-				m.statusMessage = "Showing user ports only (>=1024)"
+				m.statusMessage = fmt.Sprintf("Showing user ports only (>=%d)", SystemPortThreshold)
 			}
 			m.statusTime = time.Now()
 		}
@@ -491,7 +365,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refreshPorts(), m.tickCmd())
 
 	case refreshMsg:
-		m.processes = []Process(msg)
+		// Handle refresh errors
+		if msg.err != nil {
+			m.lastError = msg.err
+			m.statusMessage = "Error scanning ports"
+			m.statusTime = time.Now()
+			return m, nil
+		}
+		m.lastError = nil
+
+		m.processes = msg.processes
 		// Sort by lowest port number
 		sort.Slice(m.processes, func(i, j int) bool {
 			return m.processes[i].LowestPort() < m.processes[j].LowestPort()
@@ -556,7 +439,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the UI
 func (m Model) View() string {
-	var s string
+	var sb strings.Builder
 
 	// Title with selection count
 	title := "portsweep"
@@ -568,22 +451,25 @@ func (m Model) View() string {
 	if count := m.selectedCount(); count > 0 {
 		title += " " + selectedCountStyle.Render(fmt.Sprintf("[%d selected]", count))
 	}
-	s += titleStyle.Render(title) + "\n"
+	sb.WriteString(titleStyle.Render(title))
+	sb.WriteByte('\n')
 
 	// Header
 	header := fmt.Sprintf("    %-18s %-8s %-15s %-12s %s",
 		"PORT", "PID", "PROCESS", "USER", "COMMAND")
-	s += headerStyle.Render(header) + "\n"
+	sb.WriteString(headerStyle.Render(header))
+	sb.WriteByte('\n')
 
 	// Process list
 	filtered := m.filteredProcesses()
 
 	if len(filtered) == 0 {
 		if m.searchQuery != "" {
-			s += emptyStyle.Render(fmt.Sprintf("No processes match '%s'", m.searchQuery)) + "\n"
+			sb.WriteString(emptyStyle.Render(fmt.Sprintf("No processes match '%s'", m.searchQuery)))
 		} else {
-			s += emptyStyle.Render("No listening ports found") + "\n"
+			sb.WriteString(emptyStyle.Render("No listening ports found"))
 		}
+		sb.WriteByte('\n')
 	} else {
 		for i, p := range filtered {
 			// Checkbox
@@ -594,9 +480,9 @@ func (m Model) View() string {
 
 			// Format command for display using smart formatters
 			cmd := formatCommand(p.Command)
-			maxCmdLen := 50
-			if m.width > 60 {
-				maxCmdLen = m.width - 55
+			maxCmdLen := DefaultCommandWidth
+			if m.width > MinTerminalWidth {
+				maxCmdLen = m.width - ColumnWidthOffset
 			}
 			if len(cmd) > maxCmdLen {
 				cmd = cmd[:maxCmdLen-3] + "..."
@@ -612,14 +498,13 @@ func (m Model) View() string {
 			)
 
 			if i == m.cursor {
-				s += selectedStyle.Render(line) + "\n"
+				sb.WriteString(selectedStyle.Render(line))
+			} else if m.selected[p.PID] {
+				sb.WriteString(checkedStyle.Render(line))
 			} else {
-				if m.selected[p.PID] {
-					s += checkedStyle.Render(line) + "\n"
-				} else {
-					s += normalStyle.Render(line) + "\n"
-				}
+				sb.WriteString(normalStyle.Render(line))
 			}
+			sb.WriteByte('\n')
 		}
 	}
 
@@ -628,13 +513,14 @@ func (m Model) View() string {
 		fullCmd := filtered[m.cursor].Command
 		// Truncate to terminal width if needed
 		maxLen := m.width - 4 // Account for "> " prefix and some padding
-		if maxLen < 20 {
-			maxLen = 80
+		if maxLen < MinFullCommandWidth {
+			maxLen = DefaultFullCommandWidth
 		}
 		if len(fullCmd) > maxLen {
 			fullCmd = fullCmd[:maxLen-3] + "..."
 		}
-		s += "\n" + cmdDetailStyle.Render("> "+fullCmd)
+		sb.WriteByte('\n')
+		sb.WriteString(cmdDetailStyle.Render("> " + fullCmd))
 	}
 
 	// Confirmation prompt
@@ -643,86 +529,37 @@ func (m Model) View() string {
 			p := m.toKill[0]
 			portsStr := formatPorts(p.Ports, 40)
 			if len(p.Ports) == 1 {
-				s += confirmStyle.Render(fmt.Sprintf("\nKill process %d on port %s? (y/n)", p.PID, portsStr))
+				sb.WriteString(confirmStyle.Render(fmt.Sprintf("\nKill process %d on port %s? (y/n)", p.PID, portsStr)))
 			} else {
-				s += confirmStyle.Render(fmt.Sprintf("\nKill process %d on ports %s? (y/n)", p.PID, portsStr))
+				sb.WriteString(confirmStyle.Render(fmt.Sprintf("\nKill process %d on ports %s? (y/n)", p.PID, portsStr)))
 			}
 		} else {
-			s += confirmStyle.Render(fmt.Sprintf("\nKill %d selected processes? (y/n)", len(m.toKill)))
+			sb.WriteString(confirmStyle.Render(fmt.Sprintf("\nKill %d selected processes? (y/n)", len(m.toKill))))
 		}
 	}
 
-	// Status message (show for 3 seconds)
-	if m.statusMessage != "" && time.Since(m.statusTime) < 3*time.Second {
-		s += "\n" + statusStyle.Render(m.statusMessage)
+	// Status message (show for configured duration)
+	if m.statusMessage != "" && time.Since(m.statusTime) < StatusDisplayDuration {
+		sb.WriteByte('\n')
+		sb.WriteString(statusStyle.Render(m.statusMessage))
 	}
 
 	// Search bar or Help
 	if m.searching {
-		s += "\n" + searchStyle.Render("/"+m.searchQuery+"▌")
+		sb.WriteByte('\n')
+		sb.WriteString(searchStyle.Render("/" + m.searchQuery + "▌"))
 	} else if m.searchQuery != "" {
 		// Show filter indicator and modified help
-		s += "\n" + searchFilterStyle.Render(fmt.Sprintf("filter: %s", m.searchQuery))
+		sb.WriteByte('\n')
+		sb.WriteString(searchFilterStyle.Render(fmt.Sprintf("filter: %s", m.searchQuery)))
 		help := "↑/k up • ↓/j down • space select • enter/d kill • / search • esc clear • q quit"
-		s += "\n" + helpStyle.Render(help)
+		sb.WriteByte('\n')
+		sb.WriteString(helpStyle.Render(help))
 	} else {
 		help := "↑/k up • ↓/j down • space select • a select all • enter/d kill • / search • r refresh • s system ports • q quit"
-		s += "\n" + helpStyle.Render(help)
+		sb.WriteByte('\n')
+		sb.WriteString(helpStyle.Render(help))
 	}
 
-	return s
-}
-
-// truncate truncates a string to maxLen
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return fmt.Sprintf("%-*s", maxLen, s)
-	}
-	return s[:maxLen-1] + "…"
-}
-
-// formatPorts formats a list of ports for display with truncation
-// maxWidth is the maximum character width for the output
-func formatPorts(ports []int, maxWidth int) string {
-	if len(ports) == 0 {
-		return ""
-	}
-
-	// Start with the first port
-	result := fmt.Sprintf("%d", ports[0])
-
-	// Try to add more ports
-	portsShown := 1
-	for i := 1; i < len(ports); i++ {
-		next := fmt.Sprintf(", %d", ports[i])
-		remaining := len(ports) - i - 1
-
-		// Calculate space needed for "+N" suffix if we stop here
-		suffixLen := 0
-		if remaining > 0 {
-			suffixLen = len(fmt.Sprintf(" +%d", remaining+1))
-		}
-
-		// Check if adding this port would exceed max width
-		if len(result)+len(next)+suffixLen > maxWidth {
-			// Can't fit more, add suffix for remaining
-			remainingCount := len(ports) - portsShown
-			if remainingCount > 0 {
-				result += fmt.Sprintf(" +%d", remainingCount)
-			}
-			break
-		}
-
-		result += next
-		portsShown++
-	}
-
-	return result
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return sb.String()
 }

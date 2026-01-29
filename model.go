@@ -176,12 +176,14 @@ type Model struct {
 	statusTime      time.Time
 	width           int
 	height          int
+	initialFilter   string // filter from CLI argument (port or name)
+	filterApplied   bool   // whether we've applied the initial filter
 	searching       bool   // whether in search mode
 	searchQuery     string // current search query
 }
 
-// NewModel creates a new Model
-func NewModel() Model {
+// NewModel creates a new Model with optional initial filter
+func NewModel(initialFilter string) Model {
 	return Model{
 		processes:       []Process{},
 		cursor:          0,
@@ -189,6 +191,8 @@ func NewModel() Model {
 		showSystemPorts: false,
 		confirming:      false,
 		toKill:          []Process{},
+		initialFilter:   initialFilter,
+		filterApplied:   false,
 	}
 }
 
@@ -294,6 +298,36 @@ func (m Model) getSelectedProcesses() []Process {
 		}
 	}
 	return result
+}
+
+// applyInitialFilter pre-selects processes matching the CLI filter argument
+func (m *Model) applyInitialFilter() {
+	if m.initialFilter == "" {
+		return
+	}
+
+	// Check if filter is a port number (exact match)
+	if port, err := strconv.Atoi(m.initialFilter); err == nil {
+		// It's a port number - exact match
+		for _, p := range m.processes {
+			for _, pPort := range p.Ports {
+				if pPort == port {
+					m.selected[p.PID] = true
+					break
+				}
+			}
+		}
+	} else {
+		// It's a name/command filter - case-insensitive substring match
+		filterLower := strings.ToLower(m.initialFilter)
+		for _, p := range m.processes {
+			nameLower := strings.ToLower(p.Name)
+			cmdLower := strings.ToLower(p.Command)
+			if strings.Contains(nameLower, filterLower) || strings.Contains(cmdLower, filterLower) {
+				m.selected[p.PID] = true
+			}
+		}
+	}
 }
 
 // Update handles messages
@@ -472,6 +506,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.selected, pid)
 			}
 		}
+
+		// Apply initial filter from CLI argument (only once)
+		if m.initialFilter != "" && !m.filterApplied {
+			m.filterApplied = true
+			m.applyInitialFilter()
+		}
+
 		// Adjust cursor if list shrunk
 		filtered := m.filteredProcesses()
 		if m.cursor >= len(filtered) {

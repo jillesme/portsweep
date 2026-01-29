@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// Pre-compiled regular expressions for better performance
+var (
+	binSymlinkRegex  = regexp.MustCompile(`node_modules/\.bin/([^/\s]+)`)
+	homebrewRegex    = regexp.MustCompile(`/(?:opt/homebrew|usr/local)/Cellar/([^/]+)/`)
+	appBundleRegex   = regexp.MustCompile(`/([^/]+)\.app/Contents/`)
+	pnpmPackageRegex = regexp.MustCompile(`node_modules/\.pnpm/([^/]+)`)
+	npmPackageRegex  = regexp.MustCompile(`node_modules/([^/]+(?:/[^/]+)?)`)
+)
+
 // CommandFormatter is an interface for formatting command strings.
 // Implement this interface to add custom formatting for specific applications.
 type CommandFormatter interface {
@@ -52,7 +61,8 @@ var registeredFormatters = []CommandFormatter{
 	&SystemBinaryFormatter{},
 }
 
-// RegisterFormatter adds a custom formatter to the beginning of the list (highest priority)
+// RegisterFormatter adds a custom formatter to the beginning of the list (highest priority).
+// This allows extending the formatting behavior at runtime.
 func RegisterFormatter(f CommandFormatter) {
 	registeredFormatters = append([]CommandFormatter{f}, registeredFormatters...)
 }
@@ -61,8 +71,8 @@ func RegisterFormatter(f CommandFormatter) {
 // Built-in Formatters
 // =============================================================================
 
-// BinSymlinkFormatter handles commands running from node_modules/.bin/ symlinks
-// These are typically created by npm/pnpm/yarn when installing packages with binaries
+// BinSymlinkFormatter handles commands running from node_modules/.bin/ symlinks.
+// These are typically created by npm/pnpm/yarn when installing packages with binaries.
 type BinSymlinkFormatter struct{}
 
 func (f *BinSymlinkFormatter) Name() string { return "bin-symlink" }
@@ -74,8 +84,7 @@ func (f *BinSymlinkFormatter) CanFormat(cmd string) bool {
 func (f *BinSymlinkFormatter) Format(cmd string) string {
 	// Extract the binary name from node_modules/.bin/<binary>
 	// Example: node /path/to/project/node_modules/.bin/vite -> vite (project)
-	re := regexp.MustCompile(`node_modules/\.bin/([^/\s]+)`)
-	matches := re.FindStringSubmatch(cmd)
+	matches := binSymlinkRegex.FindStringSubmatch(cmd)
 
 	var binName string
 	if len(matches) >= 2 {
@@ -94,7 +103,7 @@ func (f *BinSymlinkFormatter) Format(cmd string) string {
 	return ""
 }
 
-// PnpmFormatter handles commands running from pnpm's node_modules structure
+// PnpmFormatter handles commands running from pnpm's node_modules structure.
 type PnpmFormatter struct{}
 
 func (f *PnpmFormatter) Name() string { return "pnpm" }
@@ -122,7 +131,7 @@ func (f *PnpmFormatter) Format(cmd string) string {
 	return ""
 }
 
-// NpmFormatter handles commands running from npm's node_modules structure
+// NpmFormatter handles commands running from npm's node_modules structure.
 type NpmFormatter struct{}
 
 func (f *NpmFormatter) Name() string { return "npm" }
@@ -151,7 +160,7 @@ func (f *NpmFormatter) Format(cmd string) string {
 	return ""
 }
 
-// HomebrewFormatter handles commands installed via Homebrew
+// HomebrewFormatter handles commands installed via Homebrew.
 type HomebrewFormatter struct{}
 
 func (f *HomebrewFormatter) Name() string { return "homebrew" }
@@ -164,15 +173,14 @@ func (f *HomebrewFormatter) CanFormat(cmd string) bool {
 func (f *HomebrewFormatter) Format(cmd string) string {
 	// Pattern: /opt/homebrew/Cellar/<package>/<version>/...
 	// or /usr/local/Cellar/<package>/<version>/...
-	re := regexp.MustCompile(`/(?:opt/homebrew|usr/local)/Cellar/([^/]+)/`)
-	matches := re.FindStringSubmatch(cmd)
+	matches := homebrewRegex.FindStringSubmatch(cmd)
 	if len(matches) >= 2 {
 		return matches[1]
 	}
 	return ""
 }
 
-// AppBundleFormatter handles macOS .app bundles
+// AppBundleFormatter handles macOS .app bundles.
 type AppBundleFormatter struct{}
 
 func (f *AppBundleFormatter) Name() string { return "app-bundle" }
@@ -183,20 +191,20 @@ func (f *AppBundleFormatter) CanFormat(cmd string) bool {
 
 func (f *AppBundleFormatter) Format(cmd string) string {
 	// Pattern: /path/to/Name.app/Contents/...
-	re := regexp.MustCompile(`/([^/]+)\.app/Contents/`)
-	matches := re.FindStringSubmatch(cmd)
+	matches := appBundleRegex.FindStringSubmatch(cmd)
 	if len(matches) >= 2 {
 		return matches[1]
 	}
 	return ""
 }
 
-// ProjectFormatter handles commands running from common project directories
+// ProjectFormatter handles commands running from common project directories.
 type ProjectFormatter struct{}
 
 func (f *ProjectFormatter) Name() string { return "project" }
 
-// Common project directory indicators
+// projectDirs contains common project directory indicators.
+// These patterns are used to extract project names from command paths.
 var projectDirs = []string{
 	"/Code/",
 	"/Projects/",
@@ -230,11 +238,12 @@ func (f *ProjectFormatter) Format(cmd string) string {
 	return ""
 }
 
-// SystemBinaryFormatter handles system binaries (simplifies to just the binary name)
+// SystemBinaryFormatter handles system binaries (simplifies to just the binary name).
 type SystemBinaryFormatter struct{}
 
 func (f *SystemBinaryFormatter) Name() string { return "system" }
 
+// systemPaths contains common system binary paths.
 var systemPaths = []string{
 	"/usr/bin/",
 	"/usr/sbin/",
@@ -261,7 +270,7 @@ func (f *SystemBinaryFormatter) Format(cmd string) string {
 // Helper Functions
 // =============================================================================
 
-// extractExecutable returns the base name of the executable from a command string
+// extractExecutable returns the base name of the executable from a command string.
 func extractExecutable(cmd string) string {
 	if cmd == "" {
 		return ""
@@ -277,7 +286,7 @@ func extractExecutable(cmd string) string {
 	return filepath.Base(execPath)
 }
 
-// extractProjectName tries to find a project name from common directory patterns
+// extractProjectName tries to find a project name from common directory patterns.
 func extractProjectName(path string) string {
 	// Try each project directory pattern
 	for _, dir := range projectDirs {
@@ -293,12 +302,11 @@ func extractProjectName(path string) string {
 	return ""
 }
 
-// extractPnpmPackage extracts the package name from a pnpm node_modules path
+// extractPnpmPackage extracts the package name from a pnpm node_modules path.
 // Example: node_modules/.pnpm/@cloudflare+workerd@1.2.3/... -> workerd
 // Example: node_modules/.pnpm/vite@5.0.0/... -> vite
 func extractPnpmPackage(path string) string {
-	re := regexp.MustCompile(`node_modules/\.pnpm/([^/]+)`)
-	matches := re.FindStringSubmatch(path)
+	matches := pnpmPackageRegex.FindStringSubmatch(path)
 	if len(matches) < 2 {
 		return ""
 	}
@@ -332,12 +340,11 @@ func extractPnpmPackage(path string) string {
 	return pkgPart
 }
 
-// extractNpmPackage extracts the package name from an npm node_modules path
+// extractNpmPackage extracts the package name from an npm node_modules path.
 // Example: node_modules/vite/bin/vite.js -> vite
 // Example: node_modules/@cloudflare/workerd/... -> workerd
 func extractNpmPackage(path string) string {
-	re := regexp.MustCompile(`node_modules/([^/]+(?:/[^/]+)?)`)
-	matches := re.FindStringSubmatch(path)
+	matches := npmPackageRegex.FindStringSubmatch(path)
 	if len(matches) < 2 {
 		return ""
 	}
@@ -357,7 +364,7 @@ func extractNpmPackage(path string) string {
 	return parts[0]
 }
 
-// fallbackFormat provides a simple fallback when no formatter matches
+// fallbackFormat provides a simple fallback when no formatter matches.
 func fallbackFormat(cmd string) string {
 	executable := extractExecutable(cmd)
 	if executable == "" {
@@ -391,13 +398,17 @@ func fallbackFormat(cmd string) string {
 	return executable
 }
 
-// isScriptRunner returns true if the executable typically runs scripts
+// scriptRunners is a set of executables that typically run scripts.
+var scriptRunners = map[string]bool{
+	"node":    true,
+	"python":  true,
+	"python3": true,
+	"ruby":    true,
+	"perl":    true,
+	"php":     true,
+}
+
+// isScriptRunner returns true if the executable typically runs scripts.
 func isScriptRunner(exec string) bool {
-	runners := []string{"node", "python", "python3", "ruby", "perl", "php"}
-	for _, r := range runners {
-		if exec == r {
-			return true
-		}
-	}
-	return false
+	return scriptRunners[exec]
 }

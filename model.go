@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -81,6 +83,12 @@ var (
 	selectedCountStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("#FF6B6B"))
+
+	searchStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#7DCFFF"))
+
+	searchFilterStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#9ECE6A"))
 )
 
 // Key bindings
@@ -95,6 +103,7 @@ type keyMap struct {
 	Cancel    key.Binding
 	Select    key.Binding
 	SelectAll key.Binding
+	Search    key.Binding
 }
 
 var keys = keyMap{
@@ -138,6 +147,10 @@ var keys = keyMap{
 		key.WithKeys("a"),
 		key.WithHelp("a", "select all"),
 	),
+	Search: key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "search"),
+	),
 }
 
 // Messages
@@ -163,6 +176,8 @@ type Model struct {
 	statusTime      time.Time
 	width           int
 	height          int
+	searching       bool   // whether in search mode
+	searchQuery     string // current search query
 }
 
 // NewModel creates a new Model
@@ -216,26 +231,44 @@ func (m Model) killProcess(pid int, port int, remaining int) tea.Cmd {
 	}
 }
 
-// filteredProcesses returns processes filtered by system port setting
+// filteredProcesses returns processes filtered by system port setting and search query
 func (m Model) filteredProcesses() []Process {
-	if m.showSystemPorts {
-		return m.processes
-	}
-
 	filtered := make([]Process, 0)
+
 	for _, p := range m.processes {
-		// Include if ANY port is >= 1024 (inclusive filtering)
-		hasUserPort := false
-		for _, port := range p.Ports {
-			if port >= 1024 {
-				hasUserPort = true
-				break
+		// First, apply system port filter
+		if !m.showSystemPorts {
+			hasUserPort := false
+			for _, port := range p.Ports {
+				if port >= 1024 {
+					hasUserPort = true
+					break
+				}
+			}
+			if !hasUserPort {
+				continue
 			}
 		}
-		if hasUserPort {
-			filtered = append(filtered, p)
+
+		// Then, apply search filter if query is set
+		if m.searchQuery != "" {
+			query := strings.ToLower(m.searchQuery)
+			matchesName := strings.Contains(strings.ToLower(p.Name), query)
+			matchesPort := false
+			for _, port := range p.Ports {
+				if strings.Contains(strconv.Itoa(port), m.searchQuery) {
+					matchesPort = true
+					break
+				}
+			}
+			if !matchesName && !matchesPort {
+				continue
+			}
 		}
+
+		filtered = append(filtered, p)
 	}
+
 	return filtered
 }
 
@@ -289,10 +322,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Search mode key handling
+		if m.searching {
+			switch msg.Type {
+			case tea.KeyEsc:
+				// Clear search and exit search mode
+				m.searching = false
+				m.searchQuery = ""
+				// Reset cursor if out of bounds
+				filtered := m.filteredProcesses()
+				if m.cursor >= len(filtered) {
+					m.cursor = max(0, len(filtered)-1)
+				}
+				return m, nil
+			case tea.KeyBackspace:
+				if len(m.searchQuery) > 0 {
+					m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+					// Reset cursor if out of bounds after filter change
+					filtered := m.filteredProcesses()
+					if m.cursor >= len(filtered) {
+						m.cursor = max(0, len(filtered)-1)
+					}
+				}
+				return m, nil
+			case tea.KeyEnter:
+				// Exit search mode but keep the filter
+				m.searching = false
+				return m, nil
+			case tea.KeyRunes:
+				// Append typed characters to search query
+				m.searchQuery += string(msg.Runes)
+				// Reset cursor to 0 when search changes
+				m.cursor = 0
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// Normal mode key handling
 		switch {
 		case key.Matches(msg, keys.Quit):
 			return m, tea.Quit
+
+		case key.Matches(msg, keys.Search):
+			m.searching = true
+			return m, nil
+
+		case key.Matches(msg, keys.Cancel):
+			// Clear search filter if active (Esc when not searching)
+			if m.searchQuery != "" {
+				m.searchQuery = ""
+				m.cursor = 0
+				return m, nil
+			}
 
 		case key.Matches(msg, keys.Up):
 			if m.cursor > 0 {
@@ -456,7 +538,11 @@ func (m Model) View() string {
 	filtered := m.filteredProcesses()
 
 	if len(filtered) == 0 {
-		s += emptyStyle.Render("No listening ports found") + "\n"
+		if m.searchQuery != "" {
+			s += emptyStyle.Render(fmt.Sprintf("No processes match '%s'", m.searchQuery)) + "\n"
+		} else {
+			s += emptyStyle.Render("No listening ports found") + "\n"
+		}
 	} else {
 		for i, p := range filtered {
 			// Checkbox
@@ -530,9 +616,18 @@ func (m Model) View() string {
 		s += "\n" + statusStyle.Render(m.statusMessage)
 	}
 
-	// Help
-	help := "↑/k up • ↓/j down • space select • a select all • enter/d kill • r refresh • s system ports • q quit"
-	s += "\n" + helpStyle.Render(help)
+	// Search bar or Help
+	if m.searching {
+		s += "\n" + searchStyle.Render("/"+m.searchQuery+"▌")
+	} else if m.searchQuery != "" {
+		// Show filter indicator and modified help
+		s += "\n" + searchFilterStyle.Render(fmt.Sprintf("filter: %s", m.searchQuery))
+		help := "↑/k up • ↓/j down • space select • enter/d kill • / search • esc clear • q quit"
+		s += "\n" + helpStyle.Render(help)
+	} else {
+		help := "↑/k up • ↓/j down • space select • a select all • enter/d kill • / search • r refresh • s system ports • q quit"
+		s += "\n" + helpStyle.Render(help)
+	}
 
 	return s
 }
